@@ -23,24 +23,29 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 CONTACT_STATES = {0: "N", 1: "S", 2: "O", 3: "P", 4: "F"}
 HAND_SIDE = {0: "Left", 1: "Right"}
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+USE_GPU = torch.cuda.is_available()
+print(f"Hand detector using device: {DEVICE}")
+
 # Load model once at startup
 fasterRCNN = None
 
 @app.on_event("startup")
 def load_model():
     global fasterRCNN
-    cfg.USE_GPU_NMS = True
-    cfg.CUDA = True
+    cfg.USE_GPU_NMS = USE_GPU
+    cfg.CUDA = USE_GPU
 
     fasterRCNN = resnet(["__background__", "targetobject", "hand"], 101, pretrained=False, class_agnostic=False)
     fasterRCNN.create_architecture()
     
     checkpoint = torch.load(
-        "models/res101_handobj_100K/pascal_voc/faster_rcnn_1_8_132028.pth"
+        "models/res101_handobj_100K/pascal_voc/faster_rcnn_1_8_132028.pth",
+        map_location=DEVICE
     )
     fasterRCNN.load_state_dict(checkpoint["model"])
-    fasterRCNN.cuda().eval()
-    print("Hand object detector loaded!")
+    fasterRCNN.to(DEVICE).eval()
+    print(f"Hand object detector loaded on {DEVICE}!")
 
 
 def preprocess(frame):
@@ -56,10 +61,10 @@ def preprocess(frame):
     im_pil = im_pil.resize((new_w, new_h))
     
     transform = T.Compose([T.ToTensor()])
-    im_tensor = transform(im_pil).unsqueeze(0).cuda()
-    im_info = torch.tensor([[new_h, new_w, scale]]).cuda()
-    gt_boxes = torch.zeros(1, 1, 5).cuda()
-    num_boxes = torch.zeros(1).cuda()
+    im_tensor = transform(im_pil).unsqueeze(0).to(DEVICE)
+    im_info = torch.tensor([[new_h, new_w, scale]]).to(DEVICE)
+    gt_boxes = torch.zeros(1, 1, 5).to(DEVICE)
+    num_boxes = torch.zeros(1).to(DEVICE)
     
     return im_tensor, im_info, gt_boxes, num_boxes, scale
 
@@ -111,7 +116,6 @@ async def detect_contact(request: dict = Body(...)):
                 score = float(cls_scores_kept[i])
                 
                 if label == "hand":
-                    # hand_dets: [x1,y1,x2,y2, score, contact_state, dx, dy, dz, side]
                     det = [x1, y1, x2, y2, score]
                     hand_dets.append(det)
                 else:
