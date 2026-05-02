@@ -65,8 +65,9 @@ def preprocess(frame):
     im_info = torch.tensor([[new_h, new_w, scale]]).to(DEVICE)
     gt_boxes = torch.zeros(1, 1, 5).to(DEVICE)
     num_boxes = torch.zeros(1).to(DEVICE)
+    box_info = torch.zeros(1, 1, 5).to(DEVICE)  # FIX: required by model but was missing
     
-    return im_tensor, im_info, gt_boxes, num_boxes, scale
+    return im_tensor, im_info, gt_boxes, num_boxes, box_info, scale
 
 
 @app.post("/detect_contact")
@@ -87,18 +88,24 @@ async def detect_contact(request: dict = Body(...)):
         
         thresh = request.get("threshold", 0.5)
         
-        # Preprocess
-        im_tensor, im_info, gt_boxes, num_boxes, scale = preprocess(frame)
+        # Preprocess — now returns box_info too
+        im_tensor, im_info, gt_boxes, num_boxes, box_info, scale = preprocess(frame)
         
-        # Inference
+        # Inference — FIX: pass box_info and unpack 9 outputs (last is loss_list)
         with torch.no_grad():
-            rois, cls_prob, bbox_pred, _, _, _, _, _ = fasterRCNN(
-                im_tensor, im_info, gt_boxes, num_boxes
+            rois, cls_prob, bbox_pred, _, _, _, _, _, loss_list = fasterRCNN(
+                im_tensor, im_info, gt_boxes, num_boxes, box_info
             )
         
         # Parse detections (same logic as demo.py)
         scores = cls_prob.data.squeeze()
         boxes = rois.data.squeeze()[:, 1:5]
+
+        # Debug: log max scores per class
+        print(f"[HAND_DETECTOR] hand max_score={float(scores[:, 2].max()):.3f}, "
+              f"scores_above_thresh={int((scores[:, 2] > thresh).sum())}")
+        print(f"[HAND_DETECTOR] obj  max_score={float(scores[:, 1].max()):.3f}, "
+              f"scores_above_thresh={int((scores[:, 1] > thresh).sum())}")
         
         hand_dets = []
         obj_dets = []
@@ -120,10 +127,14 @@ async def detect_contact(request: dict = Body(...)):
                     hand_dets.append(det)
                 else:
                     obj_dets.append([x1, y1, x2, y2, score])
-        
-        # Validate contact: hand detected with contact state P (portable) or O (other)
-        if hand_dets:
-            contact_validated = True  # Hand + object both present = contact possible
+
+        print(f"[HAND_DETECTOR] num_hands={len(hand_dets)}, num_objects={len(obj_dets)}")
+
+        # FIX: contact requires BOTH hand AND object to be detected
+        if hand_dets and obj_dets:
+            contact_validated = True
+        else:
+            contact_validated = False
         
         return {
             "hand_detections": hand_dets,
@@ -135,9 +146,10 @@ async def detect_contact(request: dict = Body(...)):
         }
     
     except Exception as e:
+        print(f"[HAND_DETECTOR] Exception: {e}")
         return {"error": str(e), "contact_validated": False}
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
